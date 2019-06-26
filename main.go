@@ -10,8 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/coreos/go-oidc"
 	"github.com/namsral/flag"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/oauth2"
 )
 
 // Vars
@@ -117,24 +119,60 @@ func handleCallback(w http.ResponseWriter, r *http.Request, qs url.Values,
 	http.SetCookie(w, fw.ClearCSRFCookie(r))
 
 	// Exchange code for token
-	token, err := fw.ExchangeCode(r, qs.Get("code"))
+	ctx := oauth2.NoContext
+	// TODO: remove hard-wired issue URL
+	provider, err := oidc.NewProvider(ctx, "https://dex-kubeaddons.kubeaddons.svc.cluster.local:8080/dex")
 	if err != nil {
-		logger.Errorf("Code exchange failed with: %v", err)
-		http.Error(w, "Service unavailable", 503)
+		log.Warnf("failed to get provider: %v", err)
+		http.Error(w, "Not authorized", 401)
+		return
+	}
+	oauth2Config := &oauth2.Config{
+		ClientID:     fw.ClientId,
+		ClientSecret: fw.ClientSecret,
+		Endpoint:     provider.Endpoint(),
+		Scopes:       strings.Split(fw.Scope, " "),
+		RedirectURL:  fw.redirectUri(r),
+	}
+	oauth2Token, err := oauth2Config.Exchange(ctx, r.URL.Query().Get("code"))
+	if err != nil {
+		log.Warnf("failed to exchange token: %v", err)
+		http.Error(w, "Not authorized", 401)
 		return
 	}
 
-	// Get user
-	user, err := fw.GetUser(token)
+	// Extract the ID Token from OAuth2 token.
+	rawIDToken, ok := oauth2Token.Extra("id_token").(string)
+	if !ok {
+		log.Warnf("missing ID token: %v", err)
+		http.Error(w, "Not authorized", 401)
+		return
+	}
+
+	// Parse and verify ID Token payload.
+	verifier := provider.Verifier(&oidc.Config{ClientID: fw.ClientId})
+	idToken, err := verifier.Verify(ctx, rawIDToken)
 	if err != nil {
-		logger.Errorf("Error getting user: %s", err)
+		log.Warnf("failed to verify token: %v", err)
+		http.Error(w, "Not authorized", 401)
+		return
+	}
+
+	// Extract custom claims
+	var claims struct {
+		Email    string `json:"email"`
+		Verified bool   `json:"email_verified"`
+	}
+	if err := idToken.Claims(&claims); err != nil {
+		log.Warnf("failed to extract claims: %v", err)
+		http.Error(w, "Not authorized", 401)
 		return
 	}
 
 	// Generate cookie
-	http.SetCookie(w, fw.MakeCookie(r, user.Email))
+	http.SetCookie(w, fw.MakeCookie(r, claims.Email))
 	logger.WithFields(logrus.Fields{
-		"user": user.Email,
+		"user": claims.Email,
 	}).Infof("Generated auth cookie")
 
 	// Redirect
@@ -209,10 +247,6 @@ func main() {
 	if err != nil {
 		log.Fatal("unable to parse token url")
 	}
-	userUrl, err := url.Parse((oidcParams["userinfo_endpoint"].(string)))
-	if err != nil {
-		log.Fatal("unable to parse user url")
-	}
 
 	// Parse lists
 	var cookieDomains []CookieDomain
@@ -245,7 +279,6 @@ func main() {
 
 		LoginURL: loginUrl,
 		TokenURL: tokenUrl,
-		UserURL:  userUrl,
 
 		CookieName:     *cookieName,
 		CSRFCookieName: *cSRFCookieName,

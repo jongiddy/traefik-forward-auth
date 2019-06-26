@@ -17,8 +17,9 @@ WORKDIR /app
 
 # Add libraries
 RUN apk add --no-cache git && \
-  go get "github.com/namsral/flag" && \
-  go get "github.com/sirupsen/logrus" && \
+  go get -v "github.com/namsral/flag" && \
+  go get -v "github.com/sirupsen/logrus" && \
+  go get -v "github.com/coreos/go-oidc" && \
   apk del git
 
 # Copy & build

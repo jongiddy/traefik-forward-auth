@@ -27,7 +27,6 @@ type ForwardAuth struct {
 
 	LoginURL *url.URL
 	TokenURL *url.URL
-	UserURL  *url.URL
 
 	AuthHost string
 
@@ -134,10 +133,11 @@ func (f *ForwardAuth) GetLoginURL(r *http.Request, nonce string) string {
 // Exchange code for token
 
 type Token struct {
-	Token string `json:"access_token"`
+	AccessToken string `json:"access_token"`
+	IdToken     string `json:"id_token"`
 }
 
-func (f *ForwardAuth) ExchangeCode(r *http.Request, code string) (string, error) {
+func (f *ForwardAuth) ExchangeCode(r *http.Request, code string) (string, string, error) {
 	form := url.Values{}
 	form.Set("client_id", fw.ClientId)
 	form.Set("client_secret", fw.ClientSecret)
@@ -147,44 +147,14 @@ func (f *ForwardAuth) ExchangeCode(r *http.Request, code string) (string, error)
 
 	res, err := http.PostForm(fw.TokenURL.String(), form)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	var token Token
 	defer res.Body.Close()
 	err = json.NewDecoder(res.Body).Decode(&token)
 
-	return token.Token, err
-}
-
-// Get user with token
-
-type User struct {
-	Id       string `json:"id"`
-	Email    string `json:"email"`
-	Verified bool   `json:"verified_email"`
-	Hd       string `json:"hd"`
-}
-
-func (f *ForwardAuth) GetUser(token string) (User, error) {
-	var user User
-
-	client := &http.Client{}
-	req, err := http.NewRequest("GET", fw.UserURL.String(), nil)
-	if err != nil {
-		return user, err
-	}
-
-	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", token))
-	res, err := client.Do(req)
-	if err != nil {
-		return user, err
-	}
-
-	defer res.Body.Close()
-	err = json.NewDecoder(res.Body).Decode(&user)
-
-	return user, err
+	return token.AccessToken, token.IdToken, err
 }
 
 // Utility methods
